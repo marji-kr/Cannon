@@ -271,7 +271,7 @@ class PassFailProcess(QWidget):
             kp2, des2 = orb.detectAndCompute(roi, None)
 
             if des1 is None or des2 is None:
-                score = 99
+                score = 9999
                 result = "Fail"
             else:
                 matches = bf.match(des1, des2)
