@@ -63,7 +63,13 @@ class ROISelectableLabel(QLabel):
             self.setPixmap(pixmap)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and len(self.selected_rois) < self.num_rois_spinbox.value():
+        # Modifying ROIs의 Add에서는 ROI 하나만 선택 가능 (num_rois_spinbox가 None일 때)
+        if self.num_rois_spinbox is None:
+            max_rois = 1
+        else:
+            max_rois = self.num_rois_spinbox.value()
+        
+        if event.button() == Qt.LeftButton and len(self.selected_rois) < max_rois:
             self.start_point = event.pos()
             self.drawing = True
 
@@ -417,6 +423,7 @@ class ModifyingROIs(QWidget):
         super().__init__()
         self.stacked_widget = stacked_widget
         self.shared_data = shared_data
+        self.selected_index = -1
         self.initUI()
 
     def initUI(self):
@@ -442,13 +449,22 @@ class ModifyingROIs(QWidget):
                 label = QLabel()
                 label.setFixedSize(150, 150)
                 label.setStyleSheet("border: 1px solid white;")
+                label.mousePressEvent = lambda e, idx=len(self.roi_labels): self.select_roi(idx)
                 self.roi_labels.append(label)
                 self.roi_layout.addWidget(label, i, j)
 
         bottom_layout = QHBoxLayout()
-        bottom_layout.addWidget(QPushButton("Modify"))
-        bottom_layout.addWidget(QPushButton("Add"))
-        bottom_layout.addWidget(QPushButton("Delete"))
+        self.btn_modify = QPushButton("Modify")
+        self.btn_add = QPushButton("Add")
+        self.btn_delete = QPushButton("Delete")
+
+        self.btn_modify.clicked.connect(self.modify_roi)
+        self.btn_add.clicked.connect(self.add_roi)
+        self.btn_delete.clicked.connect(self.delete_selected_roi)
+
+        bottom_layout.addWidget(self.btn_modify)
+        bottom_layout.addWidget(self.btn_add)
+        bottom_layout.addWidget(self.btn_delete)
 
         final_layout = QVBoxLayout()
         final_layout.addLayout(top_layout)
@@ -470,8 +486,62 @@ class ModifyingROIs(QWidget):
                     q_img = QImage(roi.tobytes(), w, h, bytes_per_line, QImage.Format_Grayscale8)
                     pixmap = QPixmap.fromImage(q_img).scaled(label.width(), label.height(), Qt.KeepAspectRatio)
                     label.setPixmap(pixmap)
+                    label.setStyleSheet("border: 2px solid red;" if idx == self.selected_index else "border: 1px solid white;")
             else:
                 label.clear()
+                label.setStyleSheet("border: 1px solid white;")
+
+    def select_roi(self, idx):
+        self.selected_index = idx if idx < len(self.shared_data.roi_images) else -1
+        self.update_roi_display()
+
+    def delete_selected_roi(self):
+        if self.selected_index != -1 and self.selected_index < len(self.shared_data.roi_images):
+            del self.shared_data.roi_images[self.selected_index]
+            del self.shared_data.rois[self.selected_index]
+            self.selected_index = -1
+            self.update_roi_display()
+
+    def add_roi(self):
+        if self.shared_data.master_image is None:
+            print("⚠️ No master image selected!")
+            return
+
+        self.roi_window = ROISelectionWindow(self.shared_data, None)
+        self.roi_window.show()
+        self.roi_window.label.update_image()
+       
+         # ROI 창이 닫힌 후 새로 추가된 ROI 좌표 출력
+        def on_close(event):
+            print("ROIs saved:", self.shared_data.rois)
+            self.update_roi_display()
+            event.accept()
+
+        self.roi_window.closeEvent = on_close
+
+    def modify_roi(self):
+        # ROI가 선택되지 않은 경우 처리
+        if self.selected_index == -1 or self.selected_index >= len(self.shared_data.rois):
+            print("⚠️ No ROI selected to modify!")
+            return
+
+        # 선택한 ROI 삭제
+        del self.shared_data.roi_images[self.selected_index]
+        del self.shared_data.rois[self.selected_index]
+        print(f"ROI #{self.selected_index + 1} removed. Select a new ROI.")
+
+        # Modify에서는 새 ROI 하나만 추가 가능하도록 ROISelectionWindow 호출
+        self.roi_window = ROISelectionWindow(self.shared_data, None)
+        self.roi_window.show()
+        self.roi_window.label.update_image()
+
+        # ROI 창이 닫힐 때 좌표 저장 및 UI 갱신
+        def on_close(event):
+            print("ROIs saved:", self.shared_data.rois)
+            self.update_roi_display()
+            event.accept()
+
+        self.roi_window.closeEvent = on_close
 
 # Main execution
 if __name__ == '__main__':
@@ -486,4 +556,4 @@ if __name__ == '__main__':
 
     stacked_widget.setCurrentIndex(0)
     stacked_widget.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec_()) 
