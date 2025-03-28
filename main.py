@@ -1,6 +1,8 @@
 import sys
 import cv2
 import numpy as np
+import os
+import subprocess
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, 
     QComboBox, QTableWidget, QTableWidgetItem, QSlider, QStackedWidget, QSpinBox, QFileDialog, QGridLayout
@@ -52,6 +54,9 @@ class ROISelectableLabel(QLabel):
         self.drawing = False
         self.selected_rois = []
         self.setMouseTracking(True)
+        self.scale_factor = 1.0 
+        self.active_handle = None  
+        self.handle_radius = 3     
         self.update_image()
 
     def update_image(self):
@@ -59,11 +64,32 @@ class ROISelectableLabel(QLabel):
             h, w = self.shared_data.master_image.shape
             bytes_per_line = w
             q_img = QImage(self.shared_data.master_image.data, w, h, bytes_per_line, QImage.Format_Grayscale8)
-            pixmap = QPixmap.fromImage(q_img).scaled(self.width(), self.height(), Qt.KeepAspectRatio)
-            self.setPixmap(pixmap)
+
+            pixmap = QPixmap.fromImage(q_img)
+
+            label_width = self.width()
+            label_height = self.height()
+
+            scaled_width = int(label_width * self.scale_factor)
+            scaled_height = int(label_height * self.scale_factor)
+
+            scaled_pixmap = pixmap.scaled(
+                scaled_width,
+                scaled_height,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.setPixmap(scaled_pixmap)
 
     def mousePressEvent(self, event):
-        # Modifying ROIs의 Add에서는 ROI 하나만 선택 가능 (num_rois_spinbox가 None일 때)
+        if event.button() == Qt.LeftButton:
+            for idx, rect in enumerate(self.selected_rois):
+                corners = [rect.topLeft(), rect.topRight(), rect.bottomLeft(), rect.bottomRight()]
+                for i, pt in enumerate(corners):
+                    if (pt - event.pos()).manhattanLength() < self.handle_radius + 2:
+                        self.active_handle = (idx, i)
+                        return
+
         if self.num_rois_spinbox is None:
             max_rois = 1
         else:
@@ -72,24 +98,44 @@ class ROISelectableLabel(QLabel):
         if event.button() == Qt.LeftButton and len(self.selected_rois) < max_rois:
             self.start_point = event.pos()
             self.drawing = True
-
     def mouseMoveEvent(self, event):
-        if self.drawing:
+        if self.active_handle:
+            roi_idx, corner_idx = self.active_handle
+            rect = self.selected_rois[roi_idx]
+
+            if corner_idx == 0:
+                rect.setTopLeft(event.pos())
+            elif corner_idx == 1:
+                rect.setTopRight(event.pos())
+            elif corner_idx == 2:
+                rect.setBottomLeft(event.pos())
+            elif corner_idx == 3:
+                rect.setBottomRight(event.pos())
+
+            self.selected_rois[roi_idx] = rect.normalized()
+            self.update()
+
+        elif self.drawing:
             self.end_point = event.pos()
             self.update()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self.drawing:
-            self.end_point = event.pos()
-            self.drawing = False
-            rect = QRect(self.start_point, self.end_point).normalized()
-            self.extract_roi(rect)
-            self.selected_rois.append(rect)
-            self.update()
+        if event.button() == Qt.LeftButton:
+            if self.drawing:
+                self.end_point = event.pos()
+                self.drawing = False
+                rect = QRect(self.start_point, self.end_point).normalized()
+                self.extract_roi(rect)
+                self.selected_rois.append(rect)
+                self.update()
+            
+            elif self.active_handle:
+                self.active_handle = None
+                self.update()
 
     def extract_roi(self, rect):
         if self.shared_data.master_image is not None:
-            label_w, label_h = self.width(), self.height()
+            label_w, label_h = self.pixmap().width(), self.pixmap().height()
             img_h, img_w = self.shared_data.master_image.shape
             scale_w = img_w / label_w
             scale_h = img_h / label_h
@@ -105,8 +151,31 @@ class ROISelectableLabel(QLabel):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setPen(QPen(Qt.red, 2, Qt.SolidLine))
+
         for rect in self.selected_rois:
+            painter.setPen(QPen(Qt.red, 2))
+            painter.setBrush(Qt.NoBrush) 
             painter.drawRect(rect)
+
+            painter.setBrush(Qt.blue)
+            corners = [rect.topLeft(), rect.topRight(), rect.bottomLeft(), rect.bottomRight()]
+            for pt in corners:
+                painter.drawEllipse(pt, self.handle_radius, self.handle_radius)
+
+            painter.setBrush(Qt.NoBrush)  
+
+        if self.drawing:
+            rect = QRect(self.start_point, self.end_point).normalized()
+            painter.drawRect(rect)
+
+    def wheelEvent(self, event):
+        angle = event.angleDelta().y()
+        if angle > 0:
+            self.scale_factor *= 1.1  # Zoom In
+        else:
+            self.scale_factor /= 1.1  # Zoom Out
+        self.update_image()
+        self.update()
 
 class ROISelectionWindow(QWidget):
     def __init__(self, shared_data, num_rois_spinbox, parent=None):
@@ -218,25 +287,50 @@ class PassFailProcess(QWidget):
         final_layout.addLayout(main_layout)
         self.setLayout(final_layout)
 
+    
     def toggleActivation(self):
         if self.btn_get_started.text() == "Get Started":
             self.btn_get_started.setText("Activated")
-            self.load_camera_image()
+
+            # 이미지가 있는 폴더 경로
+            folder_path = "C:/Users/shjun/Desktop/학교자료/한양대4-1/머신러닝/2조 미니 프로젝트/데이터"
+
+            # 파일 선택 다이얼로그 호출
+            file_path, _ = QFileDialog.getOpenFileName(self, "Select an Image", folder_path, "Images (*.png *.jpg *.jpeg *.bmp)")
+
+            # 사용자가 파일을 선택한 경우에만 폴더를 열도록 변경
+            if file_path:
+                self.load_selected_image(file_path)
+            else:
+                self.btn_get_started.setText("Get Started")  # 사용자가 취소하면 상태 되돌리기
+
         else:
             self.btn_get_started.setText("Get Started")
+            
+            # 📌 선택된 이미지 초기화 (카메라 화면 지우기)
+            self.label_camera.clear()
+            self.label_camera.setText("Camera")  # 기본 텍스트로 변경
+            self.shared_data.master_image = None  # 저장된 이미지도 삭제
+            
+    def select_image_from_folder(self, folder_path):
+        """ 사용자가 폴더에서 이미지를 선택하면 불러오는 함수 """
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select an Image", folder_path, "Images (*.png *.jpg *.jpeg *.bmp)")
 
-    def load_camera_image(self):
-        image_path = r"C:/Users/shjun/Desktop/학교자료/한양대4-1/머신러닝/2조 미니 프로젝트/데이터/defocused_blurred.jpg"
+        if file_path:
+            self.load_selected_image(file_path)
 
+    def load_selected_image(self, file_path):
+        """ 선택한 이미지를 QLabel(label_camera)에 표시 """
         try:
-            image_data = np.fromfile(image_path, dtype=np.uint8)
+            image_data = np.fromfile(file_path, dtype=np.uint8)
             img = cv2.imdecode(image_data, cv2.IMREAD_GRAYSCALE)
 
-            if img is not None:
-                self.display_image(self.label_camera, img)
-                print("✅ Camera image loaded successfully!")
-            else:
-                print(f"⚠️ Error loading image: {image_path}")
+            if img is None:
+                print(f"⚠️ Error loading image: {file_path}")
+                return
+
+            self.display_image(self.label_camera, img)
+            print(f"✅ Image loaded: {file_path}")
 
         except Exception as e:
             print(f"❌ Failed to load image: {str(e)}")
@@ -556,4 +650,4 @@ if __name__ == '__main__':
 
     stacked_widget.setCurrentIndex(0)
     stacked_widget.show()
-    sys.exit(app.exec_()) 
+    sys.exit(app.exec_())
